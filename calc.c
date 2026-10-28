@@ -82,12 +82,17 @@ static double as_double(Value v) {
     return v.is_float ? v.floating : (double)v.integer;
 }
 
+
+// Keep the first error position so later errors cannot overwrite it.
 static void fail_at(Parser *p, size_t position) {
-    if (!p->failed) {
-        p->failed = 1;
-        p->error_pos = position;
+    if (p->failed) {
+        return;
     }
+
+    p->failed = 1;
+    p->error_pos = position;
 }
+
 
 /* AI (ChatGPT): tokenizer and absolute error positions.
  * Prompt excerpt: "Develop a complete, reliable C17 implementation of the
@@ -102,10 +107,20 @@ static void next_token(Parser *p) {
     char *endptr;
     Token t = {0};
 
-    while (p->index < p->length &&
-           (p->line[p->index] == ' ' || p->line[p->index] == '\t')) {
-        ++p->index;
+while (p->index < p->length) {
+    char c = p->line[p->index];
+
+    if (c != ' ' && c != '\t') {
+        break;
     }
+
+    ++p->index;
+}
+
+
+
+
+
     start = p->index;
     t.position = p->file_base + start + 1;
     if (start == p->length) {
@@ -191,8 +206,7 @@ static int grow_powers(Parser *p, size_t needed) {
     return 1;
 }
 
-/* Avoid undefined signed arithmetic overflow. RTU says its test cases
- * never overflow, but we still check before doing an integer operation. */
+/* Check for integer overflow before doing calculations. */
 static long long signed_maximum(void) {
     return (long long)(~0ULL >> 1);
 }
@@ -220,7 +234,7 @@ static int integer_arithmetic(long long a, long long b, TokenKind op,
     } else if (op == T_POWER) {
         long long value = 1;
         if (b < 0) return 0;
-        /* Exponentiation by squaring takes O(log exponent) multiplications. */
+        /* Calculate powers using repeated squaring. */
         while (b > 0) {
             if ((b & 1LL) && !integer_arithmetic(value, a, T_STAR, &value))
                 return 0;
@@ -398,8 +412,7 @@ static Value parse_expression(Parser *p) {
     }
     return left;
 }
-
-/* Return 1 for success, 0 for expression error, -1 for I/O or allocation. */
+/* 1 = success, 0 = invalid expression, -1 = file or memory error. */
 static int process_line(Line *line, size_t file_base, FILE *results,
                         size_t *error_position) {
     Parser p = {0};
@@ -408,7 +421,20 @@ static int process_line(Line *line, size_t file_base, FILE *results,
     int result;
     while (i < line->length &&
            (line->data[i] == ' ' || line->data[i] == '\t')) ++i;
-    if (i == line->length || line->data[i] == '#') return 1;
+
+
+
+    // Blank lines and comment lines do not produce results.
+    if (i == line->length) {
+        return 1;
+    }
+
+    if (line->data[i] == '#') {
+        return 1;
+    }
+
+
+
     p.line = line->data;
     p.length = line->length;
     p.file_base = file_base;
@@ -572,6 +598,10 @@ static int process_file(const char *input_path, const char *output_dir,
             break;
         }
     }
+
+
+
+    // Process the last line even if the file has no final newline.
     if (line.length) {
         int status = process_line(&line, file_base, results, &error_position);
         if (status == -1) {
@@ -623,7 +653,7 @@ cleanup:
 static int ensure_directory(const char *path) {
     struct stat info;
     if (mkdir(path, 0777) == 0) return 1;
-    if (errno == EEXIST && stat(path, &info) == 0 && S_ISDIR(info.st_mode))
+    if (errno == EEXIST && stat(path, &info) == 0 && S_ISDIR(info.st_mode))   // An existing directory is fine, but a regular file is not.
         return 1;
     fprintf(stderr, "Cannot create output directory '%s': %s\n",
             path, strerror(errno));
@@ -632,7 +662,22 @@ static int ensure_directory(const char *path) {
 
 static int has_txt_suffix(const char *s) {
     size_t n = strlen(s);
-    return n >= 4 && memcmp(s + n - 4, ".txt", 4) == 0;
+
+    if (n < 4) {
+
+        return 0;
+    }
+
+
+
+    if (memcmp(s + n - 4, ".txt", 4) == 0) {
+        return 1;
+
+    }
+
+
+
+    return 0;
 }
 
 /* AI (ChatGPT): directory mode and command-line options.
@@ -784,7 +829,7 @@ int main(int argc, char **argv) {
             free(full_path);
             if (rc) break;
         }
-        /* We no longer need the DIR stream while writing result files. */
+        /* Close the input directory before writing output files. */
         closedir(directory);
         directory = NULL;
         if (!rc) {
